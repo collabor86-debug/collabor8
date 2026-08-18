@@ -1,0 +1,9 @@
+{
+  "name": "collabor8-netlify",
+  "version": "1.0.0",
+  "private": true,
+  "description": "COLLABOR8 co-working space CRM, hosted on Netlify with Google Sheets as the data store.",
+  "dependencies": {
+    "googleapis": "^128.0.0"
+  }
+}
