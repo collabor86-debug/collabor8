@@ -2,28 +2,60 @@
 // NOTE: this is a client-side-only lock intended to keep casual users out of a
 // single-file dashboard. It is NOT real security — anyone who can view this file's
 // source can read the credentials below. Do not rely on this for sensitive data.
-const C8_USERS = [
-  { username:'admin', password:'admin123', role:'admin', displayName:'Admin' },
-];
+
 let currentUser = null;
 
-function attemptLogin(){
+async function attemptLogin(){
   const submitBtn = document.getElementById('login-submit-btn');
-  if(submitBtn && submitBtn.disabled) return; // still loading data from Google Sheets
+  if(submitBtn && submitBtn.disabled) return;
+
   const uEl = document.getElementById('login-username');
   const pEl = document.getElementById('login-password');
   const errEl = document.getElementById('login-error');
-  const u = (uEl.value||'').trim();
-  const p = pEl.value||'';
-  const match = C8_USERS.find(x=>x.username.toLowerCase()===u.toLowerCase() && x.password===p);
-  if(!match){
-    errEl.textContent = 'Incorrect username or password.';
-    pEl.value = '';
+
+  const u = (uEl.value || '').trim();
+  const p = pEl.value || '';
+
+  // Clear previous error
+  errEl.textContent = '';
+
+  if(!u || !p){
+    errEl.textContent = 'Please enter username and password.';
     return;
   }
-  errEl.textContent = '';
-  currentUser = { username:match.username, role:match.role, displayName:match.displayName };
-  enterApp();
+
+  try {
+    const res = await fetch('/.netlify/functions/auth', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        username: u,
+        password: p
+      })
+    });
+
+    const result = await res.json();
+
+    if(!res.ok){
+      errEl.textContent = result.error || 'Invalid username or password.';
+      return;
+    }
+
+    currentUser = {
+      username: result.username,
+      role: result.role,
+      displayName: result.displayName || result.username
+    };
+
+    enterApp();
+
+  } catch(error) {
+    console.error('Login error:', error);
+    errEl.textContent = 'Unable to connect to the login server. Please try again.';
+  }
 }
 
 function logoutUser(){
