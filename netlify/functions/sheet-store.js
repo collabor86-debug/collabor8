@@ -14,6 +14,7 @@
 //   GOOGLE_SHEET_ID           (the long id in your sheet's URL)
 
 const { google } = require('googleapis');
+const { verifySession } = require('./auth-check');
 
 const ALLOWED_TABS = ['cabins', 'occupants', 'payments', 'invoices', 'leads', 'quotations', 'virtual_office'];
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
@@ -46,11 +47,33 @@ async function ensureTab(sheets, tab) {
 
 exports.handler = async (event) => {
   const headers = {
-    'Access-Control-Allow-Origin': '*',
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin':
+      process.env.SITE_URL || 'https://colabor8.netlify.app',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   };
-  if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers, body: '' };
+
+  if (event.httpMethod === 'OPTIONS') {
+    return {
+      statusCode: 204,
+      headers,
+      body: ''
+    };
+  }
+
+  // 🔐 Check whether the user is logged in
+  const session = verifySession(event);
+
+  if (!session) {
+    return {
+      statusCode: 401,
+      headers,
+      body: JSON.stringify({
+        error: 'Unauthorized'
+      })
+    };
+  }
 
   try {
     const auth = getAuth();
