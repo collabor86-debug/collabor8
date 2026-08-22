@@ -16,7 +16,7 @@
 const { google } = require('googleapis');
 const { verifySession } = require('./auth-check');
 
-const ALLOWED_TABS = ['cabins', 'occupants', 'payments', 'invoices', 'leads', 'quotations', 'virtual_office'];
+const ALLOWED_TABS = ['cabins', 'occupants', 'payments', 'invoices', 'leads', 'quotations', 'virtual_office', 'documents', 'settings'];
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 
 function getAuth() {
