@@ -1,7 +1,8 @@
 // ══════════════════════════════════ AUTH / LOGIN ══════════════════════════════════
-// NOTE: this is a client-side-only lock intended to keep casual users out of a
-// single-file dashboard. It is NOT real security — anyone who can view this file's
-// source can read the credentials below. Do not rely on this for sensitive data.
+// Real auth: netlify/functions/auth.js verifies credentials server-side and sets a
+// signed, HttpOnly session cookie. netlify/functions/sheet-store.js verifies that
+// cookie on every request and rejects anything without a valid session — the login
+// screen is a real gate now, not just a UI hint.
 
 let currentUser = null;
 
@@ -24,6 +25,8 @@ async function attemptLogin(){
     return;
   }
 
+  if(submitBtn) submitBtn.disabled = true;
+
   try {
     const res = await fetch('/.netlify/functions/auth', {
       method: 'POST',
@@ -41,6 +44,7 @@ async function attemptLogin(){
 
     if(!res.ok){
       errEl.textContent = result.error || 'Invalid username or password.';
+      if(submitBtn) submitBtn.disabled = false;
       return;
     }
 
@@ -50,16 +54,34 @@ async function attemptLogin(){
       displayName: result.displayName || result.username
     };
 
-    enterApp();
+    await enterApp();
 
   } catch(error) {
     console.error('Login error:', error);
     errEl.textContent = 'Unable to connect to the login server. Please try again.';
+  } finally {
+    if(submitBtn) submitBtn.disabled = false;
   }
 }
 
-function logoutUser(){
+async function logoutUser(){
   currentUser = null;
+  // Clear the server-side session cookie so it can't be reused after logout.
+  try{
+    await fetch('/.netlify/functions/logout', { method: 'POST', credentials: 'include' });
+  }catch(e){
+    console.warn('Logout request failed (cookie may still be valid until it expires):', e);
+  }
+  // Wipe sensitive data from memory too, not just from the screen.
+  cabins = buildDefaultCabins();
+  occupants = [];
+  payments = [];
+  invoices = [];
+  leads = [];
+  quotations = [];
+  virtualOffice = [];
+  documents = defaultDocuments();
+  appSettings = Object.assign({}, DEFAULT_SETTINGS);
   document.getElementById('login-screen').classList.remove('hidden');
   document.getElementById('login-username').value = '';
   document.getElementById('login-password').value = '';
@@ -67,14 +89,19 @@ function logoutUser(){
   document.getElementById('login-username').focus();
 }
 
-function enterApp(){
+async function enterApp(){
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('sf-username').textContent = currentUser.displayName;
   const badge = document.getElementById('sf-role-badge');
   badge.textContent = currentUser.role === 'admin' ? 'ADMIN' : 'STAFF';
   badge.className = 'role-badge ' + (currentUser.role === 'admin' ? 'admin' : 'staff');
   applyRolePermissions();
-  if(typeof refreshAll === 'function') refreshAll();
+  // The pre-login sync (see INIT at the bottom of this file) ran without a session
+  // cookie, so sheet-store.js rejected it and every table came back empty. Now that
+  // we have a valid session, pull the real data. syncAllFromSheets() calls
+  // refreshAll() itself once the data lands, so we don't need to call it separately.
+  if(typeof syncAllFromSheets === 'function') await syncAllFromSheets();
+  else if(typeof refreshAll === 'function') refreshAll();
 }
 
 function applyRolePermissions(){
@@ -215,9 +242,10 @@ async function loadFromSheet(tab){
   }
 }
 
-// Pulls every table from Sheets and replaces the in-memory copy with it. Runs once after
-// the app boots, before login is enabled (see INIT). Safe to call again any time (e.g.
-// wire a "Sync now" button to it) since it just re-pulls and re-renders.
+// Pulls every table from Sheets and replaces the in-memory copy with it. Runs once
+// right after a successful login (see enterApp() in the AUTH section above), since
+// sheet-store.js now requires a valid session before it will return any data. Safe
+// to call again any time (e.g. wire a "Sync now" button to it).
 async function syncAllFromSheets(){
   const [c, o, p, inv, l, q, vo, d, s] = await Promise.all([
     loadFromSheet('cabins'), loadFromSheet('occupants'), loadFromSheet('payments'),
@@ -581,11 +609,11 @@ function renderAlerts(tab){
   const container = document.getElementById('alerts-container');
   const dashList = document.getElementById('dash-alerts-list');
   const filtered = tab==='all'?alerts:alerts.filter(a=>a.type===tab);
-  const html = filtered.length ? filtered.map(a=>`<div class="alert-item ${a.type}"><span class="alert-icon">${a.type==='urgent'?'🔴':a.type==='warning'?'🟡':'🔵'}</span><div class="alert-text"><strong>${a.title}</strong><span>${a.sub}</span></div></div>`).join('') : '<div class="empty-state">No alerts in this category.</div>';
+  const html = filtered.length ? filtered.map(a=>`<div class="alert-item ${a.type}"><span class="alert-icon">${a.type==='urgent'?'🔴':a.type==='warning'?'🟡':'🔵'}</span><div class="alert-text"><strong>${esc(a.title)}</strong><span>${esc(a.sub)}</span></div></div>`).join('') : '<div class="empty-state">No alerts in this category.</div>';
   if(container) container.innerHTML = html;
   if(dashList){
     const top = alerts.slice(0,5);
-    dashList.innerHTML = top.length ? top.map(a=>`<div class="alert-item ${a.type}" style="padding:8px 10px;margin-bottom:6px;"><span class="alert-icon" style="font-size:12px;">${a.type==='urgent'?'🔴':a.type==='warning'?'🟡':'🔵'}</span><div class="alert-text" style="font-size:12px;"><strong style="font-size:12px;">${a.title}</strong><span style="font-size:11px;">${a.sub}</span></div></div>`).join('') : '<div style="padding:20px;text-align:center;color:var(--text3);font-size:13px;">No alerts</div>';
+    dashList.innerHTML = top.length ? top.map(a=>`<div class="alert-item ${a.type}" style="padding:8px 10px;margin-bottom:6px;"><span class="alert-icon" style="font-size:12px;">${a.type==='urgent'?'🔴':a.type==='warning'?'🟡':'🔵'}</span><div class="alert-text" style="font-size:12px;"><strong style="font-size:12px;">${esc(a.title)}</strong><span style="font-size:11px;">${esc(a.sub)}</span></div></div>`).join('') : '<div style="padding:20px;text-align:center;color:var(--text3);font-size:13px;">No alerts</div>';
   }
 }
 function alertTab(tab, el){ alertTabCurrent=tab; document.querySelectorAll('.tab-bar .tab').forEach(t=>t.classList.remove('active')); if(el) el.classList.add('active'); renderAlerts(tab); }
@@ -814,9 +842,9 @@ function renderPaymentsPage(){
   const pillTxt = {paid:'Paid', due:'Due', overdue:'Overdue'};
   body.innerHTML = list.map(p=>`
     <tr>
-      <td>${p.occ.name}<br><small style="color:var(--text3)">${p.occ.comp||''}</small></td>
-      <td style="font-size:12px;">${p.occ.cabins.join(', ')}</td>
-      <td>${p.month}</td>
+      <td>${esc(p.occ.name)}<br><small style="color:var(--text3)">${esc(p.occ.comp||'')}</small></td>
+      <td style="font-size:12px;">${esc(p.occ.cabins.join(', '))}</td>
+      <td>${esc(p.month)}</td>
       <td>₹${p.amountDue.toLocaleString('en-IN')}</td>
       <td style="font-size:12px;color:var(--text3)">${fmtDate(p.dueDate)}</td>
       <td><span class="status-pill ${pillCls[p.status]}">${pillTxt[p.status]}</span></td>
@@ -850,10 +878,10 @@ function renderOutstandingReport(withStatus){
   empty.style.display='none';
   tbody.innerHTML = rows.map(r=>`
     <tr>
-      <td>${r.occ.name}<br><small style="color:var(--text3)">${r.occ.comp||''}</small></td>
-      <td style="font-size:12px;">${r.occ.cabins.join(', ')}</td>
-      <td style="font-size:11.5px;color:var(--text3);">${r.occ.phone||'—'}${r.occ.email?'<br>'+r.occ.email:''}</td>
-      <td style="font-size:12px;">${r.items.map(p=>p.month).join(', ')}</td>
+      <td>${esc(r.occ.name)}<br><small style="color:var(--text3)">${esc(r.occ.comp||'')}</small></td>
+      <td style="font-size:12px;">${esc(r.occ.cabins.join(', '))}</td>
+      <td style="font-size:11.5px;color:var(--text3);">${esc(r.occ.phone||'—')}${r.occ.email?'<br>'+esc(r.occ.email):''}</td>
+      <td style="font-size:12px;">${esc(r.items.map(p=>p.month).join(', '))}</td>
       <td style="font-weight:600;color:${r.hasOverdue?'var(--coral)':'var(--amber)'}">₹${r.total.toLocaleString('en-IN')}</td>
       <td style="font-size:12px;color:var(--text3)">${fmtDate(r.oldestDue)}</td>
       <td><span class="status-pill ${r.hasOverdue?'status-overdue':'status-due'}">${r.hasOverdue?'Overdue':'Due'}</span></td>
@@ -1772,8 +1800,8 @@ function renderKanban(){
     const cards = items.map(l=>{
       const flag = followupFlag(l.nextFollowUp);
       return `<div class="lead-card" onclick="openLeadModal('${l.id}')">
-        <div class="lc-name">${l.name}</div>
-        <div class="lc-comp">${l.company||''}</div>
+        <div class="lc-name">${esc(l.name)}</div>
+        <div class="lc-comp">${esc(l.company||'')}</div>
         <div class="lc-meta"><span class="source-badge">${l.source}${l.source==='Agency'&&l.agencyName?' · '+esc(l.agencyName):''}</span><span class="lc-value">${l.seats||1} seat${(l.seats||1)>1?'s':''}</span></div>
         ${flag?`<div class="followup-flag ${flag.cls}">${flag.label}</div>`:''}
       </div>`;
@@ -1803,10 +1831,10 @@ function renderLeadsTable(){
   empty.style.display='none';
   body.innerHTML = list.map(l=>`
     <tr>
-      <td>${l.name}</td>
-      <td>${l.company||'—'}</td>
-      <td><span class="source-badge">${l.source}${l.source==='Agency'&&l.agencyName?' · '+esc(l.agencyName):''}</span></td>
-      <td>${l.stage}</td>
+      <td>${esc(l.name)}</td>
+      <td>${esc(l.company||'—')}</td>
+      <td><span class="source-badge">${esc(l.source)}${l.source==='Agency'&&l.agencyName?' · '+esc(l.agencyName):''}</span></td>
+      <td>${esc(l.stage)}</td>
       <td style="text-align:center">${l.seats||1}</td>
       <td style="font-size:12px;color:var(--text3)">${l.nextFollowUp?fmtDate(l.nextFollowUp):'—'}</td>
       <td><button class="btn btn-sm" onclick="openLeadModal('${l.id}')">Open</button></td>
@@ -1820,7 +1848,7 @@ function renderFollowups(){
   empty.style.display='none';
   body.innerHTML = list.map(l=>{
     const flag = followupFlag(l.nextFollowUp);
-    return `<tr><td>${l.name}</td><td>${l.company||'—'}</td><td>${l.stage}</td><td style="font-size:12px;color:var(--text3)">${fmtDate(l.nextFollowUp)}</td>
+    return `<tr><td>${esc(l.name)}</td><td>${esc(l.company||'—')}</td><td>${esc(l.stage)}</td><td style="font-size:12px;color:var(--text3)">${fmtDate(l.nextFollowUp)}</td>
       <td><span class="followup-flag ${flag.cls}">${flag.label}</span></td>
       <td><button class="btn btn-sm" onclick="openLeadModal('${l.id}')">Log / View</button></td></tr>`;
   }).join('');
@@ -1833,8 +1861,8 @@ function renderQuotesGrid(){
   grid.innerHTML = [...quotations].reverse().map(q=>`
     <div class="doc-card">
       <div class="doc-icon">🧾</div>
-      <div class="doc-name">${q.clientName} — ${q.company||''}</div>
-      <span class="doc-badge Other">${q.status}</span>
+      <div class="doc-name">${esc(q.clientName)} — ${esc(q.company||'')}</div>
+      <span class="doc-badge Other">${esc(q.status)}</span>
       <div class="doc-meta">${q.seatCount} seat(s) · ₹${q.finalRent.toLocaleString('en-IN')}/mo</div>
       <div class="doc-meta">Valid until ${fmtDate(q.validUntil)} · created ${fmtDate(q.created)}</div>
       <div class="doc-actions">
@@ -1940,7 +1968,7 @@ function closeLeadModal(){ document.getElementById('leadModal').classList.remove
 function renderActivities(l){
   const el = document.getElementById('ld-activities');
   const acts = [...(l.activities||[])].reverse();
-  el.innerHTML = acts.length ? acts.map(a=>`<div class="activity-item"><span class="activity-type">${a.type}</span><div class="activity-body">${a.notes}<div class="activity-date">${fmtDate(a.date)}</div></div></div>`).join('') : '<div style="color:var(--text3);font-size:12px;">No activity logged yet.</div>';
+  el.innerHTML = acts.length ? acts.map(a=>`<div class="activity-item"><span class="activity-type">${esc(a.type)}</span><div class="activity-body">${esc(a.notes)}<div class="activity-date">${fmtDate(a.date)}</div></div></div>`).join('') : '<div style="color:var(--text3);font-size:12px;">No activity logged yet.</div>';
 }
 function saveLead(){
   const id = document.getElementById('ld-id').value;
@@ -2100,7 +2128,7 @@ function renderRevenuePage(){
     const parkingCost = (o.parking||0)*PARKING_RATE;
     const total = (o.rent||0)+parkingCost;
     const isSent = o.reminder_sent;
-    return `<tr><td>${o.name}<br><small style="color:var(--text3)">${o.comp||''}</small></td><td>${o.cabins.join(', ')}</td>
+    return `<tr><td>${esc(o.name)}<br><small style="color:var(--text3)">${esc(o.comp||'')}</small></td><td>${esc(o.cabins.join(', '))}</td>
       <td>₹${(o.rent||0).toLocaleString('en-IN')}</td><td>${parkingCost?'₹'+parkingCost.toLocaleString('en-IN'):'—'}</td>
       <td style="font-weight:600;color:var(--gold)">₹${total.toLocaleString('en-IN')}</td><td style="font-size:12px;color:var(--text3)">1st of month</td>
       <td>${isSent?'<span class="reminder-sent">✓ Sent</span>':`<button class="btn btn-sm" onclick="sendReminder('${o.id}')">Send Reminder</button>`}</td></tr>`;
@@ -2109,7 +2137,7 @@ function renderRevenuePage(){
     const sumRent = active.reduce((s,a)=>s+(a.rent||0),0)||1;
     revList.innerHTML = active.map(o=>{
       const pct = Math.round((o.rent||0)/sumRent*100)||0;
-      return `<div class="summary-row"><div class="summary-dot" style="background:var(--teal)"></div><div class="summary-label">${o.name} <span style="color:var(--text3)">(${o.comp||''})</span></div><div class="summary-val">₹${(o.rent||0).toLocaleString('en-IN')}</div><div class="summary-pct">${pct}%</div></div>`;
+      return `<div class="summary-row"><div class="summary-dot" style="background:var(--teal)"></div><div class="summary-label">${esc(o.name)} <span style="color:var(--text3)">(${esc(o.comp||'')})</span></div><div class="summary-val">₹${(o.rent||0).toLocaleString('en-IN')}</div><div class="summary-pct">${pct}%</div></div>`;
     }).join('') || '<div class="empty-state">No active tenants</div>';
   }
 }
@@ -2121,7 +2149,7 @@ function renderRecentTable(){
   if(!body) return;
   const last5 = [...occupants].slice(-5).reverse();
   const pill = (o)=>{ const st=getStatus(o); if(st==='expired') return '<span class="status-pill status-expired">Expired</span>'; if(st==='expiring') return '<span class="status-pill status-expiring">Expiring</span>'; return '<span class="status-pill status-active">Active</span>'; };
-  body.innerHTML = last5.map(o=>`<tr><td>${o.cabins.join(', ')}</td><td>${o.name}</td><td>${o.comp||'—'}</td><td>${fmtINR(o.rent||0)}</td><td>${fmtDate(o.end)}</td><td>${pill(o)}</td></tr>`).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:20px;">No occupants yet</td></tr>';
+  body.innerHTML = last5.map(o=>`<tr><td>${esc(o.cabins.join(', '))}</td><td>${esc(o.name)}</td><td>${esc(o.comp||'—')}</td><td>${fmtINR(o.rent||0)}</td><td>${fmtDate(o.end)}</td><td>${pill(o)}</td></tr>`).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:20px;">No occupants yet</td></tr>';
 }
 
 // ══════════════════════════════════ MODAL (quick add) ══════════════════════════════════
@@ -2224,7 +2252,7 @@ function renderDocFilters(){
 function setDocFilter(c){ docFilterCurrent=c; renderDocuments(); }
 function populateDocLinkSelect(){
   const sel = document.getElementById('doc-link-occ');
-  sel.innerHTML = '<option value="">— None —</option>' + occupants.map(o=>`<option value="${o.id}">${o.name} (${o.comp||'—'})</option>`).join('');
+  sel.innerHTML = '<option value="">— None —</option>' + occupants.map(o=>`<option value="${o.id}">${esc(o.name)} (${esc(o.comp||'—')})</option>`).join('');
 }
 function iconFor(mime, name){
   if(/word|docx?/.test(mime)||/\.docx?$/i.test(name)) return '📄';
@@ -2250,13 +2278,13 @@ function renderDocuments(){
       const occ = occupants.find(o=>o.id===d.linkedOccupantId);
       return `<div class="doc-card">
         <div class="doc-icon">${iconFor(d.mime,d.name)}</div>
-        <div class="doc-name">${d.name}</div>
-        <span class="doc-badge ${d.category.replace(/\s+/g,'')}">${d.category}</span>
+        <div class="doc-name">${esc(d.name)}</div>
+        <span class="doc-badge ${esc(d.category.replace(/\s+/g,''))}">${esc(d.category)}</span>
         <div class="doc-meta">${fmtBytes(d.size)} · uploaded ${fmtDate(d.uploaded)}</div>
-        ${occ?`<div class="doc-meta">Linked: ${occ.name}</div>`:''}
-        ${d.notes?`<div class="doc-meta" style="font-style:italic;">${d.notes}</div>`:''}
+        ${occ?`<div class="doc-meta">Linked: ${esc(occ.name)}</div>`:''}
+        ${d.notes?`<div class="doc-meta" style="font-style:italic;">${esc(d.notes)}</div>`:''}
         <div class="doc-actions">
-          <a class="btn btn-sm" href="${d.dataUrl}" download="${d.name}">⬇ Download</a>
+          <a class="btn btn-sm" href="${d.dataUrl}" download="${esc(d.name)}">⬇ Download</a>
           <button class="btn btn-sm btn-danger" onclick="deleteDocument('${d.id}')">Delete</button>
         </div>
       </div>`;
@@ -2448,10 +2476,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('today-date').textContent = dt.toLocaleDateString('en-IN',{weekday:'long',year:'numeric',month:'long',day:'numeric'}) + ' · Guindy, Chennai';
   checkAuthOnLoad();
 
-  // Google Sheets is the only data store, so login stays disabled until the initial
-  // load finishes — signing in before that would show an empty/stale app.
-  await syncAllFromSheets();
-
+  // Data now only loads after a successful login (see enterApp()) — sheet-store.js
+  // requires a valid session cookie, so there's nothing to sync before that anyway.
+  // The login form is usable immediately.
   document.getElementById('login-submit-btn').disabled = false;
   document.getElementById('login-loading-hint').style.display = 'none';
   document.getElementById('login-static-hint').style.display = 'block';
