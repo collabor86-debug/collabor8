@@ -527,11 +527,16 @@ function updateMetrics(){
   const expiring = occupants.filter(o=>getStatus(o)==='expiring').length;
   const revenue = occupants.filter(o=>getStatus(o)!=='expired').reduce((s,o)=>s+(o.rent||0),0);
   const parking = occupants.reduce((s,o)=>s+(o.parking||0)*PARKING_RATE,0);
+  const totalDeposit = occupants.reduce((s,o)=>s+(o.deposit||0),0);
+  const totalAdvance = occupants.reduce((s,o)=>s+(o.advance||0),0);
   document.getElementById('m-total').textContent = total;
   document.getElementById('m-occupied').textContent = occ;
   document.getElementById('m-vacant').textContent = vacant;
   document.getElementById('m-revenue').textContent = fmtINR(revenue);
   document.getElementById('m-expiring').textContent = expiring;
+  document.getElementById('m-deposit').textContent = fmtINR(totalDeposit);
+  document.getElementById('m-advance').textContent = fmtINR(totalAdvance);
+  document.getElementById('m-client-funds').textContent = fmtINR(totalDeposit+totalAdvance);
   document.getElementById('occ-bar').style.width = (total? Math.round(occ/total*100):0)+'%';
   const alertCount = occupants.filter(o=>getStatus(o)==='expired'||getStatus(o)==='expiring').length;
   document.getElementById('top-alert-badge').textContent = alertCount+' Alerts';
