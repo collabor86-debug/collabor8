@@ -279,9 +279,13 @@
     <div class="invoice-section"><div class="invoice-section-title">Agreement &amp; Billing</div>
       <div class="form-row"><div class="form-group"><label class="form-label">Agreement Start Date</label><input class="form-input" id="vo-start" type="date"/></div><div class="form-group"><label class="form-label">Agreement End Date</label><input class="form-input" id="vo-end" type="date"/></div></div>
       <div class="form-row"><div class="form-group"><label class="form-label">Yearly Base Fee (₹)</label><input class="form-input" id="vo-rent" type="number" min="0"/></div><div class="form-group"><label class="form-label">Security Deposit (₹)</label><input class="form-input" id="vo-deposit" type="number" min="0"/></div></div>
+      <div class="form-row"><div class="form-group"><label class="form-label">Advance Amount (₹)</label><input class="form-input" id="vo-advance" type="number" min="0"/></div></div>
       <div class="form-group"><label class="form-label">Additional Amenities / Services (one per line: name | amount)</label><textarea class="form-input" id="vo-amenities" rows="4" placeholder="Mail handling | 1000\nMeeting room | 2000"></textarea></div>
     </div>
-    <div class="modal-actions"><button class="btn" onclick="closeVirtualOfficeModal()">Cancel</button><button class="btn btn-primary" onclick="saveVirtualOffice()">Save Client</button></div>
+    <div class="invoice-section"><div class="invoice-section-title">Car Parking</div>
+      <div class="form-row"><div class="form-group"><label class="form-label">Car Parking Slots</label><input class="form-input" id="vo-parking" type="number" value="0" min="0"/></div><div class="form-group"><label class="form-label">Parking Start Date</label><input class="form-input" id="vo-parking-date" type="date"/></div></div>
+    </div>
+    <div class="modal-actions"><button class="btn" onclick="closeVirtualOfficeModal()">Cancel</button><button class="btn btn-primary" onclick="saveVirtualOfficeClient()">Save Client</button></div>
   </div>
 </div>
 
@@ -858,10 +862,10 @@
         <div class="card-title">3. Tariff <span class="card-title-icon" style="color:var(--text3);font-size:11px;">Default reference: ₹8,000 + GST / seat — rent below is editable</span></div>
         <div class="form-row">
           <div class="form-group"><label class="form-label">Monthly Rent (₹, ex-GST) <span style="color:var(--gold);">— editable</span></label><input class="form-input" id="f2-rent" type="number" oninput="onManualRentChange()"/></div>
-          <div class="form-group"><label class="form-label">Security Deposit (3 mo, ₹)</label><input class="form-input" id="f2-deposit" type="number" readonly/></div>
+          <div class="form-group"><label class="form-label">Security Deposit (3 mo, ₹) <span style="color:var(--gold);">— editable</span></label><input class="form-input" id="f2-deposit" type="number" min="0" oninput="onManualDepositChange()"/></div>
         </div>
         <div class="form-row">
-          <div class="form-group"><label class="form-label">Advance Fee (1 mo, ₹)</label><input class="form-input" id="f2-advance" type="number" readonly/></div>
+          <div class="form-group"><label class="form-label">Advance Fee (1 mo, ₹) <span style="color:var(--gold);">— editable</span></label><input class="form-input" id="f2-advance" type="number" min="0" oninput="onManualAdvanceChange()"/></div>
           <div class="form-group"><label class="form-label">Escalation</label><input class="form-input" value="10% after 11 months" readonly/></div>
         </div>
         <div class="form-row">
