@@ -51,9 +51,11 @@
   <div class="nav-item" onclick="showPage('payments',this)"><span class="nav-icon">₹</span> Payments
     <span style="margin-left:auto;background:var(--amber-dim);color:var(--amber);padding:2px 7px;border-radius:20px;font-size:10px;font-weight:600;" id="due-count-nav">0</span>
   </div>
+  <!-- Invoices section disabled per request (kept here, commented out, in case it's needed again later):
   <div class="nav-item" onclick="showPage('invoices',this)"><span class="nav-icon">🧾</span> Invoices
     <span style="margin-left:auto;background:var(--blue-dim);color:var(--blue);padding:2px 7px;border-radius:20px;font-size:10px;font-weight:600;" id="invoice-pending-nav">0</span>
   </div>
+  -->
   <div class="nav-item admin-only-nav" onclick="showPage('revenue',this)"><span class="nav-icon">◈</span> Revenue</div>
   <div class="nav-item" onclick="showPage('alerts',this)"><span class="nav-icon">◉</span> Alerts
     <span style="margin-left:auto;background:var(--coral-dim);color:var(--coral);padding:2px 7px;border-radius:20px;font-size:10px;font-weight:600;" id="alert-count-nav">0</span>
@@ -277,13 +279,18 @@
       <div class="form-row"><div class="form-group"><label class="form-label">Office / Registered Address</label><textarea class="form-input" id="vo-address" rows="2"></textarea></div><div class="form-group"><label class="form-label">GSTIN / UIN</label><input class="form-input" id="vo-gstin"/></div></div>
     </div>
     <div class="invoice-section"><div class="invoice-section-title">Agreement &amp; Billing</div>
-      <div class="form-row"><div class="form-group"><label class="form-label">Agreement Start Date</label><input class="form-input" id="vo-start" type="date"/></div><div class="form-group"><label class="form-label">Agreement End Date</label><input class="form-input" id="vo-end" type="date"/></div></div>
-      <div class="form-row"><div class="form-group"><label class="form-label">Yearly Base Fee (₹)</label><input class="form-input" id="vo-rent" type="number" min="0"/></div><div class="form-group"><label class="form-label">Security Deposit (₹)</label><input class="form-input" id="vo-deposit" type="number" min="0"/></div></div>
-      <div class="form-row"><div class="form-group"><label class="form-label">Advance Amount (₹)</label><input class="form-input" id="vo-advance" type="number" min="0"/></div></div>
-      <div class="form-group"><label class="form-label">Additional Amenities / Services (one per line: name | amount)</label><textarea class="form-input" id="vo-amenities" rows="4" placeholder="Mail handling | 1000\nMeeting room | 2000"></textarea></div>
+      <div class="form-row"><div class="form-group"><label class="form-label">Agreement Start Date</label><input class="form-input" id="vo-start" type="date" oninput="renderVoAgreementDates()"/><div class="section-note">Shown as <b id="vo-start-ddmmyyyy">DD/MM/YYYY</b></div></div><div class="form-group"><label class="form-label">Agreement End Date</label><input class="form-input" id="vo-end" type="date" oninput="renderVoAgreementDates()"/><div class="section-note">Shown as <b id="vo-end-ddmmyyyy">DD/MM/YYYY</b></div></div></div>
+      <div class="form-row"><div class="form-group"><label class="form-label">Yearly Base Fee (₹)</label><input class="form-input" id="vo-rent" type="number" min="0" oninput="renderVoRevenuePreview()"/></div></div>
+      <div class="form-group"><label class="form-label">Additional Amenities / Services (one per line: name | amount)</label><textarea class="form-input" id="vo-amenities" rows="4" placeholder="Mail handling | 1000\nMeeting room | 2000" oninput="renderVoRevenuePreview()"></textarea></div>
+      <div class="cabin-select-summary">
+        <div class="summary-chip">Monthly Revenue (Excl. GST): <b id="vo-monthly-excl-gst">₹0</b></div>
+        <div class="summary-chip">Monthly Revenue (Incl. GST): <b id="vo-monthly-incl-gst">₹0</b></div>
+      </div>
     </div>
-    <div class="invoice-section"><div class="invoice-section-title">Car Parking</div>
-      <div class="form-row"><div class="form-group"><label class="form-label">Car Parking Slots</label><input class="form-input" id="vo-parking" type="number" value="0" min="0"/></div><div class="form-group"><label class="form-label">Parking Start Date</label><input class="form-input" id="vo-parking-date" type="date"/></div></div>
+    <div class="form-group">
+      <label class="form-label">Documents <span style="color:var(--text3);">(Aadhaar, PAN, GST Certificate — PDF/JPG/JPEG/PNG)</span></label>
+      <div class="occ-doc-grid" id="vo-docs-grid"></div>
+      <input type="file" id="vo-doc-file-input" accept=".pdf,.jpg,.jpeg,.png,image/jpeg,image/png,application/pdf" style="display:none;" onchange="onVoDocFileChosen(event)"/>
     </div>
     <div class="modal-actions"><button class="btn" onclick="closeVirtualOfficeModal()">Cancel</button><button class="btn btn-primary" onclick="saveVirtualOfficeClient()">Save Client</button></div>
   </div>
@@ -363,14 +370,43 @@
 
 <!-- PAYMENT EDIT MODAL -->
 <div class="modal-overlay" id="paymentEditModal">
-  <div class="modal" style="width:520px;">
+  <div class="modal" style="width:560px;">
     <div class="modal-title"><span>Edit Payment</span><span class="modal-close" onclick="closePaymentEditModal()">✕</span></div>
     <input type="hidden" id="pe-id"/>
     <div id="pe-context" class="payment-edit-box"></div>
-    <div class="form-row"><div class="form-group"><label class="form-label">Amount Due (₹)</label><input class="form-input payment-amount-edit" id="pe-amount" type="number" min="0"/></div><div class="form-group"><label class="form-label">Due Date</label><input class="form-input" id="pe-date" type="date"/></div></div>
-    <div class="form-group"><label class="form-label">Additional Amenities / Adjustments</label><textarea class="form-input" id="pe-amenities" rows="4" placeholder="Mail handling — ₹1,000\nExtra meeting room — ₹2,000"></textarea></div>
+    <div class="form-row"><div class="form-group"><label class="form-label">Base Amount Due (₹)</label><input class="form-input payment-amount-edit" id="pe-amount" type="number" min="0" oninput="renderPeTotal()"/></div><div class="form-group"><label class="form-label">Due Date</label><input class="form-input" id="pe-date" type="date"/></div></div>
+    <div class="form-group">
+      <label class="form-label">Amenities</label>
+      <div class="amenity-table">
+        <div class="amenity-table-head"><span>Amenity</span><span>Amount (₹)</span><span></span></div>
+        <div id="pe-amenities-rows"></div>
+      </div>
+      <button type="button" class="btn btn-sm" style="margin-top:8px;" onclick="addPeAmenityRow()">+ Add Amenity</button>
+    </div>
+    <div class="cabin-select-summary" style="margin-bottom:14px;">
+      <div class="summary-chip">Base: <b id="pe-total-base">₹0</b></div>
+      <div class="summary-chip">Amenities: <b id="pe-total-amenities">₹0</b></div>
+      <div class="summary-chip">Total Due: <b id="pe-total-all" style="color:var(--gold)">₹0</b></div>
+    </div>
     <div class="form-group"><label class="form-label">Notes</label><textarea class="form-input" id="pe-notes" rows="3"></textarea></div>
     <div class="modal-actions"><button class="btn" onclick="closePaymentEditModal()">Cancel</button><button class="btn btn-primary" onclick="savePaymentEdit()">Save Payment</button></div>
+  </div>
+</div>
+
+<!-- RECORD PAYMENT MODAL -->
+<div class="modal-overlay" id="recordPaymentModal">
+  <div class="modal" style="width:460px;">
+    <div class="modal-title"><span>Record Payment Received</span><span class="modal-close" onclick="closeRecordPaymentModal()">✕</span></div>
+    <input type="hidden" id="rp-id"/>
+    <div id="rp-context" class="payment-edit-box"></div>
+    <div class="form-group"><label class="form-label">Amount Paid (₹)</label><input class="form-input" id="rp-amount" type="number" min="0"/></div>
+    <div class="form-group"><label class="form-label">Date Received</label><input class="form-input" id="rp-date" type="date"/></div>
+    <div class="form-group" style="display:flex;align-items:center;gap:8px;">
+      <input type="checkbox" id="rp-tds" onchange="document.getElementById('rp-tds-amount-group').style.display=this.checked?'block':'none'" style="width:16px;height:16px;"/>
+      <label class="form-label" style="margin:0;" for="rp-tds">Client deducted TDS</label>
+    </div>
+    <div class="form-group" id="rp-tds-amount-group" style="display:none;"><label class="form-label">TDS Amount Deducted (₹)</label><input class="form-input" id="rp-tds-amount" type="number" min="0"/></div>
+    <div class="modal-actions"><button class="btn" onclick="closeRecordPaymentModal()">Cancel</button><button class="btn btn-primary" onclick="saveRecordPayment()">Save Payment</button></div>
   </div>
 </div>
 
@@ -448,6 +484,17 @@
       </div>
     </div>
 
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">Virtual Office Revenue Trend <span class="card-title-icon">◉</span></div>
+        <div class="chart-wrap" style="height:220px"><canvas id="voRevChart" role="img" aria-label="Virtual office revenue trend">Virtual office revenue trend</canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Car Parking Revenue Trend <span class="card-title-icon">◉</span></div>
+        <div class="chart-wrap" style="height:220px"><canvas id="parkingRevChart" role="img" aria-label="Car parking revenue trend">Car parking revenue trend</canvas></div>
+      </div>
+    </div>
+
     <div class="grid-3">
       <div class="card">
         <div class="card-title">First Floor Quick View <span class="card-title-icon" style="color:var(--text3);font-size:11px;">Hover a cabin for details</span></div>
@@ -510,7 +557,9 @@
     </div>
 
     <div class="card">
-      <div class="card-title">Seating Details Table <span class="card-title-icon" style="color:var(--text3);font-size:11px;">Edit any field — saved automatically</span></div>
+      <div class="card-title">Seating Details Table <span class="card-title-icon" id="seating-edit-hint" style="color:var(--text3);font-size:11px;">Click Edit Seats to change seat counts</span>
+        <button class="btn btn-sm" id="seating-edit-btn" style="margin-left:auto;" onclick="toggleSeatingEditMode()">✎ Edit Seats</button>
+      </div>
       <table class="data-table">
         <thead><tr><th>S.No</th><th>Cabin Number</th><th>Seater</th><th>Occupied</th><th>Occupant</th><th>Action</th></tr></thead>
         <tbody id="seating-body"></tbody>
@@ -530,7 +579,8 @@
     <div class="occ-summary-grid">
       <div class="occ-summary-card"><div class="occ-summary-label">Active Occupants</div><div class="occ-summary-value" id="occ-summary-active">0</div><div class="occ-summary-sub">Current lease holders</div></div>
       <div class="occ-summary-card"><div class="occ-summary-label">Seats Occupied</div><div class="occ-summary-value" id="occ-summary-seats">0</div><div class="occ-summary-sub">Based on actual allocations</div></div>
-      <div class="occ-summary-card"><div class="occ-summary-label">Monthly Rent</div><div class="occ-summary-value" id="occ-summary-rent">₹0</div><div class="occ-summary-sub">Excluding GST &amp; parking</div></div>
+      <div class="occ-summary-card"><div class="occ-summary-label">Monthly Revenue (Excl. GST)</div><div class="occ-summary-value" id="occ-summary-rent">₹0</div><div class="occ-summary-sub">Rent only, excluding parking</div></div>
+      <div class="occ-summary-card"><div class="occ-summary-label">Monthly Revenue (Incl. GST)</div><div class="occ-summary-value" id="occ-summary-rent-gst">₹0</div><div class="occ-summary-sub">Rent + 18% GST</div></div>
       <div class="occ-summary-card"><div class="occ-summary-label">Total Deposit</div><div class="occ-summary-value" id="occ-summary-deposit">₹0</div><div class="occ-summary-sub">All active &amp; current clients</div></div>
       <div class="occ-summary-card"><div class="occ-summary-label">Total Advance</div><div class="occ-summary-value" id="occ-summary-advance">₹0</div><div class="occ-summary-sub">Advance received for seats</div></div>
       <div class="occ-summary-card"><div class="occ-summary-label">Expiring Soon</div><div class="occ-summary-value" id="occ-summary-expiring">0</div><div class="occ-summary-sub">Within 30 days</div></div>
@@ -554,6 +604,8 @@
     <div class="occ-summary-grid">
       <div class="occ-summary-card"><div class="occ-summary-label">Active Clients</div><div class="occ-summary-value" id="vo-summary-active">0</div><div class="occ-summary-sub">Virtual-office agreements</div></div>
       <div class="occ-summary-card"><div class="occ-summary-label">Yearly Billing</div><div class="occ-summary-value" id="vo-summary-rent">₹0</div><div class="occ-summary-sub">Base fee + amenities</div></div>
+      <div class="occ-summary-card"><div class="occ-summary-label">Monthly Revenue (Excl. GST)</div><div class="occ-summary-value" id="vo-summary-monthly-excl-gst">₹0</div><div class="occ-summary-sub">Yearly billing ÷ 12</div></div>
+      <div class="occ-summary-card"><div class="occ-summary-label">Monthly Revenue (Incl. GST)</div><div class="occ-summary-value" id="vo-summary-monthly-incl-gst">₹0</div><div class="occ-summary-sub">+ 18% GST</div></div>
       <div class="occ-summary-card"><div class="occ-summary-label">Renewals Soon</div><div class="occ-summary-value" id="vo-summary-expiring">0</div><div class="occ-summary-sub">Within 30 days</div></div>
       <div class="occ-summary-card"><div class="occ-summary-label">Total Clients</div><div class="occ-summary-value" id="vo-summary-total">0</div><div class="occ-summary-sub">All records</div></div>
     </div>
@@ -570,21 +622,6 @@
 
     <div class="mail-note">
       <strong>About reminder emails:</strong> this dashboard runs entirely in your browser and has no mail server, so it can't send email on its own. "Draft Reminder" opens a preview you can edit before it hands off to your default mail app (or you can copy the text) — you press send.
-      <div class="form-row" style="margin-top:10px;">
-        <div class="form-group" style="margin-bottom:6px;">
-          <label class="form-label">UPI ID / VPA (for distinct per-invoice UPI payment links)</label>
-          <input class="form-input" id="upi-id-input" placeholder="collabor8@okhdfcbank" style="font-size:12px;padding:6px 10px;" oninput="clearTimeout(window._uid); window._uid=setTimeout(savePaymentSettings,600);"/>
-        </div>
-        <div class="form-group" style="margin-bottom:6px;">
-          <label class="form-label">Payee display name</label>
-          <input class="form-input" id="upi-payee-input" placeholder="COLLABOR8" style="font-size:12px;padding:6px 10px;" oninput="clearTimeout(window._uid); window._uid=setTimeout(savePaymentSettings,600);"/>
-        </div>
-      </div>
-      <div class="form-group" style="margin-bottom:4px;">
-        <label class="form-label">Fallback payment gateway link (used only if no UPI ID is set above)</label>
-        <input class="form-input" id="payment-link-input" placeholder="https://rzp.io/l/..." style="font-size:12px;padding:6px 10px;" oninput="clearTimeout(window._plt); window._plt=setTimeout(savePaymentSettings,600);"/>
-      </div>
-      <div style="font-size:11px;color:var(--text3);margin-top:2px;">With a UPI ID set, every reminder email gets its own <code>upi://pay</code> link pre-filled with that occupant's exact amount due — tapping it on a phone opens GPay/PhonePe/Paytm ready to pay. <span id="payment-link-note" style="color:var(--teal);"></span></div>
     </div>
 
     <div class="metrics-grid" style="grid-template-columns:repeat(4,1fr)">
