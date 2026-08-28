@@ -128,6 +128,7 @@ function checkAuthOnLoad(){
 // ══════════════════════════════════ DATA MODEL ══════════════════════════════════
 const RATE_PER_SEAT = 8000; // Default reference rate (₹ + GST per seat). Individual occupant rent remains editable and is never overwritten by this default.
 const PARKING_RATE = 5000;
+const GST_RATE = 0.18; // 18% GST (9% CGST + 9% SGST), used to show "amount + GST" figures alongside base revenue
 const FLOORS = ['First Floor','Second Floor','Third Floor'];
 
 function genRegularFloor(prefix, cprefix){
@@ -403,16 +404,26 @@ function showCabinTooltip(e,c){
   tt.style.top = (e.clientY-20)+'px';
 }
 
+let seatingEditMode = false;
+function toggleSeatingEditMode(){
+  seatingEditMode = !seatingEditMode;
+  const btn = document.getElementById('seating-edit-btn');
+  const hint = document.getElementById('seating-edit-hint');
+  if(btn) btn.textContent = seatingEditMode ? '✓ Done Editing' : '✎ Edit Seats';
+  if(hint) hint.textContent = seatingEditMode ? 'Seat counts are unlocked — click Done Editing when finished' : 'Click Edit Seats to change seat counts';
+  renderSeatingTable();
+}
 function renderSeatingTable(){
   const q = (document.getElementById('floor-search')?.value||'').toLowerCase();
   let list = cabinsOf(floorCurrent);
   if(q) list = list.filter(c=> c.id.toLowerCase().includes(q) || (c.occupantName||'').toLowerCase().includes(q));
   const body = document.getElementById('seating-body');
+  const seatLock = seatingEditMode ? '' : 'readonly title="Click \'Edit Seats\' above to change seat counts"';
   body.innerHTML = list.map((c,i)=>`
     <tr>
       <td>${i+1}</td>
       <td><input class="table-input" value="${c.id}" onchange="renameCabin('${c.id}', this.value)" style="max-width:110px;"/></td>
-      <td><input class="table-input" type="number" min="1" value="${c.seater}" onchange="resizeCabin('${c.id}', this.value)" style="max-width:80px;"/></td>
+      <td><input class="table-input" type="number" min="1" value="${c.seater}" onchange="resizeCabin('${c.id}', this.value)" style="max-width:80px;${seatingEditMode?'':'opacity:0.6;cursor:not-allowed;'}" ${seatLock}/></td>
       <td><span class="toggle-yn ${c.occupied?'yes':'no'}" onclick="toggleCabinOccupied('${c.id}')">${c.occupied?'Yes':'No'}</span></td>
       <td style="font-size:12px;color:var(--text3);">${c.occupantName||'—'}</td>
       <td><button class="btn btn-sm btn-danger" onclick="deleteCabin('${c.id}')">Delete</button></td>
@@ -429,6 +440,7 @@ function renameCabin(oldId, newVal){
   saveCabins(); saveOccupants(); refreshAll();
 }
 function resizeCabin(id, val){
+  if(!seatingEditMode){ renderSeatingTable(); return; } // safety net — seat values are locked outside edit mode
   const n = parseInt(val)||1;
   const c = cabins.find(c=>c.id===id);
   c.seater = n; saveCabins(); refreshAll();
@@ -509,7 +521,46 @@ function renderDashGrid(){
 }
 
 // ══════════════════════════════════ CHARTS ══════════════════════════════════
-let occChartInst=null, revChartInst=null, revBreakInst=null;
+let occChartInst=null, revChartInst=null, revBreakInst=null, voRevChartInst=null, parkingRevChartInst=null;
+// Builds real (not random/synthetic) monthly revenue series for the last `n` months, including
+// the current month, derived directly from actual occupant / virtual-office records: an
+// occupant or VO client counts toward a given month if their agreement was active at any point
+// during that month (start on/before month end, and no end date or end on/after month start).
+function monthlyRevenueSeries(n){
+  const now = new Date();
+  const months = [];
+  for(let i=n-1;i>=0;i--){
+    const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
+    months.push(d);
+  }
+  const labels = months.map(d=>d.toLocaleDateString('en-IN',{month:'short'}));
+  const cabinRevenue = [], voRevenue = [], parkingRevenue = [];
+  months.forEach(monthStart=>{
+    const monthEnd = new Date(monthStart.getFullYear(), monthStart.getMonth()+1, 0);
+    let cabin=0, vo=0, parking=0;
+    occupants.forEach(o=>{
+      if(!o.start) return;
+      const s = parseLocalDate(o.start);
+      const e = o.end ? parseLocalDate(o.end) : null;
+      if(s>monthEnd) return;
+      if(e && e<monthStart) return;
+      cabin += (o.rent||0);
+      parking += (o.parking||0)*PARKING_RATE;
+    });
+    virtualOffice.forEach(v=>{
+      if(!v.start) return;
+      const s = parseLocalDate(v.start);
+      const e = v.end ? parseLocalDate(v.end) : null;
+      if(s>monthEnd) return;
+      if(e && e<monthStart) return;
+      vo += virtualOfficeMonthlyTotal(v);
+    });
+    cabinRevenue.push(Math.round(cabin));
+    voRevenue.push(Math.round(vo));
+    parkingRevenue.push(Math.round(parking));
+  });
+  return { labels, cabinRevenue, voRevenue, parkingRevenue };
+}
 function cssVar(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 function renderCharts(){
   if (typeof Chart === 'undefined') return; // Chart.js CDN not reachable — rest of the dashboard still works
@@ -530,10 +581,23 @@ function renderCharts(){
   const ctx2 = document.getElementById('revChart');
   if(ctx2){
     if(revChartInst) revChartInst.destroy();
-    const baseRev = occupants.filter(o=>getStatus(o)!=='expired').reduce((s,o)=>s+(o.rent||0),0);
-    const months = ['Nov','Dec','Jan','Feb','Mar','Apr'];
-    const revData = months.map((_,i)=>Math.round(baseRev*(0.7+i*0.06)));
-    revChartInst = new Chart(ctx2, { type:'bar', data:{ labels:months, datasets:[{ label:'Revenue (₹)', data:revData, backgroundColor:violet+'88', borderColor:violet, borderWidth:1, borderRadius:4 }]},
+    const series = monthlyRevenueSeries(6);
+    revChartInst = new Chart(ctx2, { type:'bar', data:{ labels:series.labels, datasets:[{ label:'Revenue (₹)', data:series.cabinRevenue, backgroundColor:violet+'88', borderColor:violet, borderWidth:1, borderRadius:4 }]},
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{ y:{grid:{color:gridColor},ticks:{color:tickColor,callback:v=>'₹'+Math.round(v).toLocaleString('en-IN')}}, x:{grid:{display:false},ticks:{color:tickColor}} } } });
+  }
+  const ctx2b = document.getElementById('voRevChart');
+  if(ctx2b){
+    if(voRevChartInst) voRevChartInst.destroy();
+    const series = monthlyRevenueSeries(6);
+    voRevChartInst = new Chart(ctx2b, { type:'bar', data:{ labels:series.labels, datasets:[{ label:'Virtual Office Revenue (₹)', data:series.voRevenue, backgroundColor:teal+'88', borderColor:teal, borderWidth:1, borderRadius:4 }]},
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{ y:{grid:{color:gridColor},ticks:{color:tickColor,callback:v=>'₹'+Math.round(v).toLocaleString('en-IN')}}, x:{grid:{display:false},ticks:{color:tickColor}} } } });
+  }
+  const ctx2c = document.getElementById('parkingRevChart');
+  if(ctx2c){
+    if(parkingRevChartInst) parkingRevChartInst.destroy();
+    const series = monthlyRevenueSeries(6);
+    const gold = cssVar('--gold');
+    parkingRevChartInst = new Chart(ctx2c, { type:'bar', data:{ labels:series.labels, datasets:[{ label:'Car Parking Revenue (₹)', data:series.parkingRevenue, backgroundColor:gold+'88', borderColor:gold, borderWidth:1, borderRadius:4 }]},
       options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{ y:{grid:{color:gridColor},ticks:{color:tickColor,callback:v=>'₹'+Math.round(v).toLocaleString('en-IN')}}, x:{grid:{display:false},ticks:{color:tickColor}} } } });
   }
   const ctx3 = document.getElementById('revBreakChart');
@@ -627,7 +691,9 @@ function renderOccupantsTable(){
   const active=occupants.filter(o=>getStatus(o)!=='expired');
   document.getElementById('occ-summary-active').textContent=active.length;
   document.getElementById('occ-summary-seats').textContent=active.reduce((s,o)=>s+occupantSeatCount(o),0);
-  document.getElementById('occ-summary-rent').textContent=fmtINR(active.reduce((s,o)=>s+(o.rent||0),0));
+  const activeRent=active.reduce((s,o)=>s+(o.rent||0),0);
+  document.getElementById('occ-summary-rent').textContent=fmtINR(activeRent);
+  document.getElementById('occ-summary-rent-gst').textContent=fmtINR(activeRent*(1+GST_RATE));
   document.getElementById('occ-summary-deposit').textContent=fmtINR(active.reduce((s,o)=>s+(o.deposit||0),0));
   document.getElementById('occ-summary-advance').textContent=fmtINR(active.reduce((s,o)=>s+(o.advance||0),0));
   document.getElementById('occ-summary-expiring').textContent=occupants.filter(o=>{const d=daysLeft(o.end);return d>=0&&d<=30}).length;
@@ -635,7 +701,7 @@ function renderOccupantsTable(){
   const pill=o=>{const st=getStatus(o),dl=daysLeft(o.end);if(st==='expired')return '<span class="status-pill status-expired">Expired</span>';if(st==='expiring')return '<span class="status-pill status-expiring">Expiring '+dl+'d</span>';return '<span class="status-pill status-active">Active</span>';};
   body.innerHTML=filtered.map(o=>{
     const seats=occupantSeatCount(o); const capacity=(o.cabins||[]).reduce((s,id)=>{const c=cabins.find(x=>x.id===id);return s+(c?c.seater:0)},0);
-    return `<tr><td><div class="occ-main">${esc((o.cabins||[]).join(', '))}</div><span class="occ-sub">${seats} of ${capacity} seats allocated</span></td><td><div class="occ-main">${esc(o.name)}</div><span class="occ-sub">${esc(o.email||'No email')}</span></td><td>${esc(o.comp||'—')}</td><td style="font-size:11.5px;color:var(--text3)">${esc(o.phone||'—')}</td><td><span class="occ-seats-pill">● ${seats}</span></td><td><span class="occ-rent">${fmtINR(o.rent||0)}</span><span class="occ-sub">+ ${o.parking||0} parking</span></td><td><span class="occ-rent">${fmtINR(o.deposit||0)}</span><span class="occ-sub">Security deposit</span></td><td><span class="occ-rent">${fmtINR(o.advance||0)}</span><span class="occ-sub">Seat advance</span></td><td><span class="occ-sub" style="margin:0">Start</span>${fmtDate(o.start)}<span class="occ-sub">End ${fmtDate(o.end)}</span></td><td>${pill(o)}</td><td style="font-size:11px">${docCountFor(o.id)} file(s)</td><td><div class="row-actions"><button class="btn btn-sm" onclick="openEditOccModal('${o.id}')">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteOccupant('${o.id}')">Remove</button></div></td></tr>`;
+    return `<tr><td><div class="occ-main">${esc((o.cabins||[]).join(', '))}</div><span class="occ-sub">${seats} of ${capacity} seats allocated</span></td><td><div class="occ-main">${esc(o.name)}</div><span class="occ-sub">${esc(o.email||'No email')}</span></td><td>${esc(o.comp||'—')}</td><td style="font-size:11.5px;color:var(--text3)">${esc(o.phone||'—')}</td><td style="text-align:center"><span class="occ-seats-pill">● ${seats}</span></td><td><span class="occ-rent">${fmtINR(o.rent||0)}</span><span class="occ-sub">+ ${o.parking||0} parking</span></td><td><span class="occ-rent">${fmtINR(o.deposit||0)}</span><span class="occ-sub">Security deposit</span></td><td><span class="occ-rent">${fmtINR(o.advance||0)}</span><span class="occ-sub">Seat advance</span></td><td><span class="occ-sub" style="margin:0">Start</span>${fmtDate(o.start)}<span class="occ-sub">End ${fmtDate(o.end)}</span></td><td>${pill(o)}</td><td style="font-size:11px">${docCountFor(o.id)} file(s)</td><td><div class="row-actions"><button class="btn btn-sm" onclick="openEditOccModal('${o.id}')">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteOccupant('${o.id}')">Remove</button></div></td></tr>`;
   }).join('');
 }
 function renderSeatAllocationEditor(containerId, cabinIds, allocations){
@@ -659,7 +725,12 @@ function saveEditOccupant(){
   const id=document.getElementById('eo-id').value,o=occupants.find(x=>x.id===id);if(!o)return;
   const newIds=document.getElementById('eo-ws').value.split(',').map(s=>s.trim()).filter(Boolean);if(!newIds.length){alert('At least one cabin ID is required.');return;}
   const missing=newIds.filter(cid=>!cabins.some(c=>c.id===cid));if(missing.length){alert('Unknown cabin ID(s): '+missing.join(', '));return;}
-  const taken=newIds.filter(cid=>{const c=cabins.find(x=>x.id===cid);return c.occupied&&c.occupantId!==o.id});if(taken.length){alert('Already occupied by another occupant: '+taken.join(', '));return;}
+  // Check against the real source of truth (each occupant's own cabin list) instead of the
+  // denormalized cabins[].occupantId field, which can go stale (e.g. left pointing at an
+  // occupant who no longer lists that cabin) and used to cause false "already occupied"
+  // errors when saving an occupant's own unchanged cabin(s).
+  const taken=newIds.filter(cid=>occupants.some(other=>other.id!==o.id && (other.cabins||[]).includes(cid)));
+  if(taken.length){alert('Already occupied by another occupant: '+taken.join(', '));return;}
   o.cabins.filter(cid=>!newIds.includes(cid)).forEach(cid=>{const c=cabins.find(x=>x.id===cid);if(c){c.occupied=false;c.occupantId=null;c.occupantName=null;}});
   const name=document.getElementById('eo-name').value.trim()||o.name;newIds.forEach(cid=>{const c=cabins.find(x=>x.id===cid);c.occupied=true;c.occupantId=o.id;c.occupantName=name;});
   const allocations=collectSeatAllocations('eo-seat-allocation');
@@ -671,10 +742,27 @@ function saveEditOccupant(){
 // ══════════════════════════════════ VIRTUAL OFFICE ══════════════════════════════════
 function amenityLinesToText(items){return (items||[]).map(x=>x.name+' | '+(x.amount||0)).join('\n');}
 function parseAmenityText(text){return (text||'').split('\n').map(x=>x.trim()).filter(Boolean).map(x=>{const a=x.split('|');return {name:(a[0]||'').trim(),amount:parseFloat((a[1]||'0').replace(/,/g,''))||0};});}
-function virtualOfficeYearlyTotal(v){return (v.rent||0)+(v.amenities||[]).reduce((s,a)=>s+(a.amount||0),0)+((v.parking||0)*PARKING_RATE*12);}
+// Car parking and deposit/advance were removed from Virtual Office clients (they don't apply to
+// this product) — yearly total is now just the base fee plus any additional amenities.
+function virtualOfficeYearlyTotal(v){return (v.rent||0)+(v.amenities||[]).reduce((s,a)=>s+(a.amount||0),0);}
+function virtualOfficeMonthlyTotal(v){return virtualOfficeYearlyTotal(v)/12;}
+function renderVoAgreementDates(){
+  const s=document.getElementById('vo-start').value, e=document.getElementById('vo-end').value;
+  document.getElementById('vo-start-ddmmyyyy').textContent = s?fmtDateDDMMYYYYSlash(s):'DD/MM/YYYY';
+  document.getElementById('vo-end-ddmmyyyy').textContent = e?fmtDateDDMMYYYYSlash(e):'DD/MM/YYYY';
+}
+function renderVoRevenuePreview(){
+  const rent=parseFloat(document.getElementById('vo-rent').value)||0;
+  const amenities=parseAmenityText(document.getElementById('vo-amenities').value).reduce((s,a)=>s+(a.amount||0),0);
+  const monthly=(rent+amenities)/12;
+  document.getElementById('vo-monthly-excl-gst').textContent=fmtINR(monthly);
+  document.getElementById('vo-monthly-incl-gst').textContent=fmtINR(monthly*(1+GST_RATE));
+}
 function openVirtualOfficeModal(id){
   const v=id?virtualOffice.find(x=>x.id===id):null;document.getElementById('vo-modal-title').textContent=v?'Edit Virtual Office Client':'New Virtual Office Client';document.getElementById('vo-id').value=v?v.id:'';
-  document.getElementById('vo-name').value=v?v.name:'';document.getElementById('vo-company').value=v?v.company||'':'';document.getElementById('vo-email').value=v?v.email||'':'';document.getElementById('vo-phone').value=v?v.phone||'':'';document.getElementById('vo-address').value=v?v.address||'':'';document.getElementById('vo-gstin').value=v?v.gstin||'':'';document.getElementById('vo-start').value=v?v.start:'';document.getElementById('vo-end').value=v?v.end||'':'';document.getElementById('vo-rent').value=v?v.rent||0:'';document.getElementById('vo-deposit').value=v?v.deposit||0:'';document.getElementById('vo-advance').value=v?v.advance||0:'';document.getElementById('vo-parking').value=v?v.parking||0:0;document.getElementById('vo-parking-date').value=v?v.parkingDate||'':'';document.getElementById('vo-amenities').value=v?amenityLinesToText(v.amenities):'';document.getElementById('virtualOfficeModal').classList.add('open');
+  document.getElementById('vo-name').value=v?v.name:'';document.getElementById('vo-company').value=v?v.company||'':'';document.getElementById('vo-email').value=v?v.email||'':'';document.getElementById('vo-phone').value=v?v.phone||'':'';document.getElementById('vo-address').value=v?v.address||'':'';document.getElementById('vo-gstin').value=v?v.gstin||'':'';document.getElementById('vo-start').value=v?v.start:'';document.getElementById('vo-end').value=v?v.end||'':'';document.getElementById('vo-rent').value=v?v.rent||0:'';document.getElementById('vo-amenities').value=v?amenityLinesToText(v.amenities):'';
+  renderVoAgreementDates();renderVoRevenuePreview();renderVoDocs(v?v.id:null);
+  document.getElementById('virtualOfficeModal').classList.add('open');
 }
 function closeVirtualOfficeModal(){document.getElementById('virtualOfficeModal').classList.remove('open');}
 // NOTE: this used to be named saveVirtualOffice(), same as the sheet-sync function below.
@@ -684,23 +772,133 @@ function closeVirtualOfficeModal(){document.getElementById('virtualOfficeModal')
 function saveVirtualOfficeClient(){
   const id=document.getElementById('vo-id').value||'vo-'+Date.now(),name=document.getElementById('vo-name').value.trim(),start=document.getElementById('vo-start').value,end=document.getElementById('vo-end').value;
   if(!name){alert('Contact name is required.');return;}if(!start){alert('Agreement start date is required.');return;}if(end&&end<start){alert('Agreement end date cannot be before start date.');return;}
-  const data={id,name,company:document.getElementById('vo-company').value.trim(),email:document.getElementById('vo-email').value.trim(),phone:document.getElementById('vo-phone').value.trim(),address:document.getElementById('vo-address').value.trim(),gstin:document.getElementById('vo-gstin').value.trim(),start,end,rent:parseFloat(document.getElementById('vo-rent').value)||0,deposit:parseFloat(document.getElementById('vo-deposit').value)||0,advance:parseFloat(document.getElementById('vo-advance').value)||0,parking:parseInt(document.getElementById('vo-parking').value)||0,parkingDate:document.getElementById('vo-parking-date').value||'',amenities:parseAmenityText(document.getElementById('vo-amenities').value)};
+  const data={id,name,company:document.getElementById('vo-company').value.trim(),email:document.getElementById('vo-email').value.trim(),phone:document.getElementById('vo-phone').value.trim(),address:document.getElementById('vo-address').value.trim(),gstin:document.getElementById('vo-gstin').value.trim(),start,end,rent:parseFloat(document.getElementById('vo-rent').value)||0,amenities:parseAmenityText(document.getElementById('vo-amenities').value)};
+  const wasNew = !document.getElementById('vo-id').value;
   const ix=virtualOffice.findIndex(x=>x.id===id);if(ix>=0)virtualOffice[ix]=Object.assign(virtualOffice[ix],data);else virtualOffice.push(data);saveVirtualOffice();closeVirtualOfficeModal();renderVirtualOffice();
 }
-function deleteVirtualOffice(id){if(!confirm('Remove this virtual-office client?'))return;virtualOffice=virtualOffice.filter(x=>x.id!==id);saveVirtualOffice();renderVirtualOffice();}
+function deleteVirtualOffice(id){if(!confirm('Remove this virtual-office client?'))return;virtualOffice=virtualOffice.filter(x=>x.id!==id);documents=documents.filter(d=>d.linkedVirtualOfficeId!==id);saveVirtualOffice();saveDocuments();renderVirtualOffice();}
 function renderVirtualOffice(){
   const q=(document.getElementById('vo-search')?.value||'').toLowerCase(),list=virtualOffice.filter(v=>(v.name||'').toLowerCase().includes(q)||(v.company||'').toLowerCase().includes(q));
-  const active=virtualOffice.filter(v=>!v.end||getDaysFromToday(v.end)>=0);document.getElementById('vo-summary-active').textContent=active.length;document.getElementById('vo-summary-rent').textContent=fmtINR(active.reduce((s,v)=>s+virtualOfficeYearlyTotal(v),0));document.getElementById('vo-summary-expiring').textContent=virtualOffice.filter(v=>v.end&&getDaysFromToday(v.end)>=0&&getDaysFromToday(v.end)<=30).length;document.getElementById('vo-summary-total').textContent=virtualOffice.length;
+  const active=virtualOffice.filter(v=>!v.end||getDaysFromToday(v.end)>=0);
+  const activeMonthly=active.reduce((s,v)=>s+virtualOfficeMonthlyTotal(v),0);
+  document.getElementById('vo-summary-active').textContent=active.length;
+  document.getElementById('vo-summary-rent').textContent=fmtINR(active.reduce((s,v)=>s+virtualOfficeYearlyTotal(v),0));
+  document.getElementById('vo-summary-monthly-excl-gst').textContent=fmtINR(activeMonthly);
+  document.getElementById('vo-summary-monthly-incl-gst').textContent=fmtINR(activeMonthly*(1+GST_RATE));
+  document.getElementById('vo-summary-expiring').textContent=virtualOffice.filter(v=>v.end&&getDaysFromToday(v.end)>=0&&getDaysFromToday(v.end)<=30).length;document.getElementById('vo-summary-total').textContent=virtualOffice.length;
   const grid=document.getElementById('virtual-office-grid'),empty=document.getElementById('virtual-office-empty');if(!list.length){grid.innerHTML='';empty.style.display='block';return;}empty.style.display='none';
-  grid.innerHTML=list.map(v=>{const status=v.end&&getDaysFromToday(v.end)<0?'<span class="status-pill status-expired">Expired</span>':v.end&&getDaysFromToday(v.end)<=30?'<span class="status-pill status-expiring">Renewal soon</span>':'<span class="status-pill status-active">Active</span>';const parkingLine=(v.parking||0)>0?`${v.parking} slot(s)${v.parkingDate?' from '+fmtDate(v.parkingDate):''}`:'None';return `<div class="virtual-card"><div class="virtual-card-head"><div><div class="virtual-card-name">${esc(v.name)}</div><div class="virtual-card-company">${esc(v.company||'Virtual Office Client')}</div></div><span class="virtual-badge">VIRTUAL OFFICE</span></div><div style="margin-bottom:10px">${status}</div><div class="virtual-meta"><div class="virtual-meta-item"><div class="virtual-meta-label">Agreement</div><div class="virtual-meta-value">${fmtDate(v.start)} → ${fmtDate(v.end)}</div></div><div class="virtual-meta-item"><div class="virtual-meta-label">Yearly Billing</div><div class="virtual-meta-value" style="color:var(--gold)">${fmtINR(virtualOfficeYearlyTotal(v))}</div></div><div class="virtual-meta-item"><div class="virtual-meta-label">Deposit / Advance</div><div class="virtual-meta-value">${fmtINR(v.deposit||0)} / ${fmtINR(v.advance||0)}</div></div><div class="virtual-meta-item"><div class="virtual-meta-label">Contact</div><div class="virtual-meta-value">${esc(v.phone||v.email||'—')}</div></div><div class="virtual-meta-item"><div class="virtual-meta-label">Amenities</div><div class="virtual-meta-value">${(v.amenities||[]).length} item(s)</div></div><div class="virtual-meta-item"><div class="virtual-meta-label">Car Parking</div><div class="virtual-meta-value">${parkingLine}</div></div></div><div class="row-actions" style="margin-top:12px"><button class="btn btn-sm" onclick="openVirtualOfficeModal('${v.id}')">Edit</button><button class="btn btn-sm" onclick="createInvoiceForVirtualOffice('${v.id}')">Create Invoice</button><button class="btn btn-sm btn-danger" onclick="deleteVirtualOffice('${v.id}')">Remove</button></div></div>`}).join('');
+  grid.innerHTML=list.map(v=>{const status=v.end&&getDaysFromToday(v.end)<0?'<span class="status-pill status-expired">Expired</span>':v.end&&getDaysFromToday(v.end)<=30?'<span class="status-pill status-expiring">Renewal soon</span>':'<span class="status-pill status-active">Active</span>';const monthly=virtualOfficeMonthlyTotal(v);return `<div class="virtual-card"><div class="virtual-card-head"><div><div class="virtual-card-name">${esc(v.name)}</div><div class="virtual-card-company">${esc(v.company||'Virtual Office Client')}</div></div><span class="virtual-badge">VIRTUAL OFFICE</span></div><div style="margin-bottom:10px">${status}</div><div class="virtual-meta"><div class="virtual-meta-item"><div class="virtual-meta-label">Agreement</div><div class="virtual-meta-value">${fmtDateDDMMYYYYSlash(v.start)} → ${fmtDateDDMMYYYYSlash(v.end)}</div></div><div class="virtual-meta-item"><div class="virtual-meta-label">Yearly Billing</div><div class="virtual-meta-value" style="color:var(--gold)">${fmtINR(virtualOfficeYearlyTotal(v))}</div></div><div class="virtual-meta-item"><div class="virtual-meta-label">Monthly Revenue (Excl. GST)</div><div class="virtual-meta-value">${fmtINR(monthly)}</div></div><div class="virtual-meta-item"><div class="virtual-meta-label">Monthly Revenue (Incl. GST)</div><div class="virtual-meta-value">${fmtINR(monthly*(1+GST_RATE))}</div></div><div class="virtual-meta-item"><div class="virtual-meta-label">Contact</div><div class="virtual-meta-value">${esc(v.phone||v.email||'—')}</div></div><div class="virtual-meta-item"><div class="virtual-meta-label">Amenities</div><div class="virtual-meta-value">${(v.amenities||[]).length} item(s)</div></div><div class="virtual-meta-item"><div class="virtual-meta-label">Documents</div><div class="virtual-meta-value">${documents.filter(d=>d.linkedVirtualOfficeId===v.id).length} file(s)</div></div></div><div class="row-actions" style="margin-top:12px"><button class="btn btn-sm" onclick="openVirtualOfficeModal('${v.id}')">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteVirtualOffice('${v.id}')">Remove</button></div></div>`}).join('');
 }
-function createInvoiceForVirtualOffice(id){const v=virtualOffice.find(x=>x.id===id);if(!v)return;openInvoiceModal(null);document.getElementById('inv-buyer-name').value=v.company||v.name;document.getElementById('inv-buyer-addr').value=v.address||'';document.getElementById('inv-buyer-gst').value=v.gstin||'';document.getElementById('inv-buyer-contact').value=v.name;document.getElementById('inv-buyer-phone').value=v.phone||'';document.getElementById('inv-agreement').value='AGREEMENT DATED '+fmtDateDDMMYY(v.start);document.getElementById('inv-items-body').innerHTML='';addInvoiceItemRow({desc:'Virtual Office Yearly Fee',hsn:'997212',gstRate:18,qty:1,rate:v.rent||0,per:'Year',amount:v.rent||0});(v.amenities||[]).forEach(a=>addInvoiceItemRow({desc:a.name,hsn:'997212',gstRate:18,qty:1,rate:a.amount,per:'Year',amount:a.amount}));if((v.parking||0)>0)addInvoiceItemRow({desc:'Car Parking'+(v.parkingDate?' (from '+fmtDateDDMMYY(v.parkingDate)+')':''),hsn:'',gstRate:18,qty:v.parking,rate:PARKING_RATE*12,per:'Year',amount:v.parking*PARKING_RATE*12});renumberInvoiceRows();recalcInvoiceTotals();}
+function createInvoiceForVirtualOffice(id){const v=virtualOffice.find(x=>x.id===id);if(!v)return;openInvoiceModal(null);document.getElementById('inv-buyer-name').value=v.company||v.name;document.getElementById('inv-buyer-addr').value=v.address||'';document.getElementById('inv-buyer-gst').value=v.gstin||'';document.getElementById('inv-buyer-contact').value=v.name;document.getElementById('inv-buyer-phone').value=v.phone||'';document.getElementById('inv-agreement').value='AGREEMENT DATED '+fmtDateDDMMYY(v.start);document.getElementById('inv-items-body').innerHTML='';addInvoiceItemRow({desc:'Virtual Office Yearly Fee',hsn:'997212',gstRate:18,qty:1,rate:v.rent||0,per:'Year',amount:v.rent||0});(v.amenities||[]).forEach(a=>addInvoiceItemRow({desc:a.name,hsn:'997212',gstRate:18,qty:1,rate:a.amount,per:'Year',amount:a.amount}));renumberInvoiceRows();recalcInvoiceTotals();}
+
+// ══════════════════════════════════ VIRTUAL OFFICE KYC DOCUMENTS ══════════════════════════════════
+const VO_DOC_TYPES = ['Aadhaar Card','PAN Card','GST Certificate'];
+let voDocPendingType = null;
+function voDocFor(voId, type){ return documents.find(d=>d.linkedVirtualOfficeId===voId && d.docType===type) || null; }
+function renderVoDocs(voId){
+  const grid = document.getElementById('vo-docs-grid');
+  if(!grid) return;
+  if(!voId){ grid.innerHTML = '<div class="section-note">Save this client first, then upload documents.</div>'; return; }
+  grid.innerHTML = VO_DOC_TYPES.map(type=>{
+    const d = voDocFor(voId, type);
+    if(!d){
+      return `<div class="occ-doc-card empty">
+        <div class="occ-doc-type">${type}</div>
+        <div class="occ-doc-status pending">○ Not uploaded</div>
+        <div class="occ-doc-actions"><button class="btn btn-sm" onclick="triggerVoDocUpload('${voId}','${type}')">⬆ Upload</button></div>
+      </div>`;
+    }
+    return `<div class="occ-doc-card">
+      <div class="occ-doc-type">${type}</div>
+      <div class="occ-doc-file">${iconFor(d.mime,d.name)} ${esc(d.name)}</div>
+      <div class="occ-doc-status">✓ Uploaded ${fmtDate(d.uploaded)}</div>
+      <div class="occ-doc-actions">
+        <button class="btn btn-sm" onclick="viewOccDoc('${d.id}')">View</button>
+        <button class="btn btn-sm" onclick="triggerVoDocUpload('${voId}','${type}')">Replace</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteVoDoc('${d.id}','${voId}')">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+function triggerVoDocUpload(voId, type){
+  voDocPendingType = type;
+  const input = document.getElementById('vo-doc-file-input');
+  input.dataset.voId = voId;
+  input.value = '';
+  input.click();
+}
+function onVoDocFileChosen(e){
+  const file = e.target.files[0];
+  const voId = e.target.dataset.voId;
+  const type = voDocPendingType;
+  if(!file || !voId || !type) return;
+  const ext = (file.name.split('.').pop()||'').toLowerCase();
+  if(!OCC_DOC_ALLOWED_EXT.includes(ext)){
+    alert('Only PDF, JPG, JPEG or PNG files are allowed for '+type+'.');
+    e.target.value = '';
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = function(){
+    documents = documents.filter(d=>!(d.linkedVirtualOfficeId===voId && d.docType===type));
+    documents.push({ id:'doc-'+Date.now(), name:file.name, category:'KYC', docType:type,
+      mime:file.type||'application/octet-stream', size:file.size, dataUrl:reader.result, uploaded:today(),
+      linkedVirtualOfficeId:voId, notes:'' });
+    saveDocuments();
+    renderVoDocs(voId);
+    if(document.getElementById('page-documents').classList.contains('active')) renderDocuments();
+    if(document.getElementById('page-virtualoffice').classList.contains('active')) renderVirtualOffice();
+  };
+  reader.readAsDataURL(file);
+}
+function deleteVoDoc(id, voId){
+  if(!confirm('Delete this document permanently?')) return;
+  documents = documents.filter(d=>d.id!==id);
+  saveDocuments();
+  renderVoDocs(voId);
+  if(document.getElementById('page-documents').classList.contains('active')) renderDocuments();
+  if(document.getElementById('page-virtualoffice').classList.contains('active')) renderVirtualOffice();
+}
 
 // ══════════════════════════════════ PAYMENT EDITING ══════════════════════════════════
+let peAmenities = []; // working copy of amenity rows while the Edit Payment modal is open
 function paymentAmenityText(p){return (p.amenities||[]).map(a=>a.name+' — ₹'+Number(a.amount||0).toLocaleString('en-IN')).join('\n');}
-function openPaymentEditModal(id){const p=payments.find(x=>x.id===id);if(!p)return;const o=occupants.find(x=>x.id===p.occupantId);document.getElementById('pe-id').value=id;document.getElementById('pe-context').innerHTML=`<strong>${esc(o?o.name:'Unknown')}</strong><div class="section-note">${esc(o?.comp||'')} · ${esc(formatMonthLabel(p.month))}</div>`;document.getElementById('pe-amount').value=p.amountDue||0;document.getElementById('pe-date').value=p.dueDate||today();document.getElementById('pe-amenities').value=paymentAmenityText(p);document.getElementById('pe-notes').value=p.notes||'';document.getElementById('paymentEditModal').classList.add('open');}
+function paymentAmenitiesTotal(p){return (p.amenities||[]).reduce((s,a)=>s+(Number(a.amount)||0),0);}
+function renderPeAmenityRows(){
+  const wrap = document.getElementById('pe-amenities-rows');
+  if(!peAmenities.length){ wrap.innerHTML = '<div class="amenity-row-empty">No amenities added yet.</div>'; renderPeTotal(); return; }
+  wrap.innerHTML = peAmenities.map((a,i)=>`
+    <div class="amenity-row">
+      <input type="text" value="${esc(a.name||'')}" placeholder="e.g. Mail handling" oninput="peAmenities[${i}].name=this.value">
+      <input type="number" min="0" value="${a.amount||0}" oninput="peAmenities[${i}].amount=parseFloat(this.value)||0; renderPeTotal();">
+      <button type="button" class="amenity-row-remove" onclick="removePeAmenityRow(${i})" title="Remove">✕</button>
+    </div>`).join('');
+  renderPeTotal();
+}
+function addPeAmenityRow(){ peAmenities.push({name:'', amount:0}); renderPeAmenityRows(); }
+function removePeAmenityRow(i){ peAmenities.splice(i,1); renderPeAmenityRows(); }
+function renderPeTotal(){
+  const base = parseFloat(document.getElementById('pe-amount').value)||0;
+  const amenTotal = peAmenities.reduce((s,a)=>s+(Number(a.amount)||0),0);
+  document.getElementById('pe-total-base').textContent = fmtINR(base);
+  document.getElementById('pe-total-amenities').textContent = fmtINR(amenTotal);
+  document.getElementById('pe-total-all').textContent = fmtINR(base+amenTotal);
+}
+function openPaymentEditModal(id){const p=payments.find(x=>x.id===id);if(!p)return;const o=occupants.find(x=>x.id===p.occupantId);document.getElementById('pe-id').value=id;document.getElementById('pe-context').innerHTML=`<strong>${esc(o?o.name:'Unknown')}</strong><div class="section-note">${esc(o?.comp||'')} · ${esc(formatMonthLabel(p.month))}</div>`;document.getElementById('pe-amount').value=(p.baseAmount!=null?p.baseAmount:p.amountDue)||0;document.getElementById('pe-date').value=p.dueDate||today();peAmenities=(p.amenities||[]).map(a=>({name:a.name,amount:a.amount}));renderPeAmenityRows();document.getElementById('pe-notes').value=p.notes||'';document.getElementById('paymentEditModal').classList.add('open');}
 function closePaymentEditModal(){document.getElementById('paymentEditModal').classList.remove('open');}
-function savePaymentEdit(){const id=document.getElementById('pe-id').value,p=payments.find(x=>x.id===id);if(!p)return;const amount=parseFloat(document.getElementById('pe-amount').value);if(isNaN(amount)||amount<0){alert('Enter a valid payment amount.');return;}p.amountDue=amount;p.dueDate=document.getElementById('pe-date').value||p.dueDate;p.amenities=parseAmenityText(document.getElementById('pe-amenities').value);p.notes=document.getElementById('pe-notes').value.trim();p.editedAt=today();savePayments();closePaymentEditModal();refreshAll();}
+function savePaymentEdit(){
+  const id=document.getElementById('pe-id').value,p=payments.find(x=>x.id===id);if(!p)return;
+  const base=parseFloat(document.getElementById('pe-amount').value);
+  if(isNaN(base)||base<0){alert('Enter a valid base amount.');return;}
+  const amenities=peAmenities.filter(a=>(a.name||'').trim()).map(a=>({name:a.name.trim(),amount:Number(a.amount)||0}));
+  p.baseAmount=base;
+  p.amenities=amenities;
+  p.amountDue=base+amenities.reduce((s,a)=>s+a.amount,0);
+  p.dueDate=document.getElementById('pe-date').value||p.dueDate;
+  p.notes=document.getElementById('pe-notes').value.trim();
+  p.editedAt=today();
+  savePayments();closePaymentEditModal();refreshAll();
+}
 
 // ══════════════════════════════════ MAIL DRAFT HELPERS ══════════════════════════════════
 function mailtoLink(to, subject, body){
@@ -844,20 +1042,26 @@ function renderPaymentsPage(){
   empty.style.display='none';
   const pillCls = {paid:'status-paid', due:'status-due', overdue:'status-overdue'};
   const pillTxt = {paid:'Paid', due:'Due', overdue:'Overdue'};
-  body.innerHTML = list.map(p=>`
+  body.innerHTML = list.map(p=>{
+    const amenTotal = paymentAmenitiesTotal(p);
+    const amenBreakdown = amenTotal ? `<div class="occ-sub" style="margin-top:2px;color:var(--text3)">Base ₹${(p.baseAmount!=null?p.baseAmount:p.amountDue-amenTotal).toLocaleString('en-IN')} + Amenities ₹${amenTotal.toLocaleString('en-IN')}</div>` : '';
+    const paidInfo = p.status==='paid' ? `<div class="occ-sub" style="margin-top:2px;color:var(--teal)">Paid ₹${Number(p.paidAmount!=null?p.paidAmount:p.amountDue).toLocaleString('en-IN')} on ${fmtDate(p.paidDate)}${p.tdsDeducted?' · TDS ₹'+Number(p.tdsAmount||0).toLocaleString('en-IN')+' deducted':''}</div>` : '';
+    const notesLine = p.notes ? `<div class="occ-sub" style="margin-top:2px;color:var(--amber)">📝 ${esc(p.notes)}</div>` : '';
+    return `
     <tr>
       <td>${esc(p.occ.name)}<br><small style="color:var(--text3)">${esc(p.occ.comp||'')}</small></td>
       <td style="font-size:12px;">${esc(p.occ.cabins.join(', '))}</td>
       <td>${esc(p.month)}</td>
-      <td>₹${p.amountDue.toLocaleString('en-IN')}</td>
+      <td>₹${p.amountDue.toLocaleString('en-IN')}${amenBreakdown}${paidInfo}${notesLine}</td>
       <td style="font-size:12px;color:var(--text3)">${fmtDate(p.dueDate)}</td>
       <td><span class="status-pill ${pillCls[p.status]}">${pillTxt[p.status]}</span></td>
       <td style="font-size:11px;color:var(--text3);">${p.reminderDraftedAt ? 'Drafted '+fmtDate(p.reminderDraftedAt) : '—'}</td>
       <td><div class="row-actions">
-        <button class="btn btn-sm" onclick="openPaymentEditModal('${p.id}')">✎ Edit</button>${p.status!=='paid' ? `<button class="btn btn-sm" onclick="markPaymentPaid('${p.id}')">Mark Paid</button>` : ''}
+        <button class="btn btn-sm" onclick="openPaymentEditModal('${p.id}')">✎ Edit</button>${p.status!=='paid' ? `<button class="btn btn-sm" onclick="openRecordPaymentModal('${p.id}')">Record Payment</button>` : `<button class="btn btn-sm" onclick="openRecordPaymentModal('${p.id}')">✎ Edit Payment</button>`}
         ${p.status!=='paid' ? `<button class="btn btn-sm" onclick="draftPaymentReminder('${p.id}')">✉ Draft Reminder</button>` : ''}
       </div></td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 }
 function renderOutstandingReport(withStatus){
   const outstanding = withStatus.filter(p=>p.status!=='paid');
@@ -1118,6 +1322,8 @@ function esc(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</
 function sanitizeFilename(s){ return String(s||'').replace(/[\/\\?%*:|"<>]/g,'-').trim().slice(0,80); }
 function fmtDateDDMMYY(d){ if(!d) return ''; const dt=new Date(d); if(isNaN(dt)) return ''; return String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0')+'.'+String(dt.getFullYear()).slice(-2); }
 function fmtDateDDMMYYYY(d){ if(!d) return ''; const dt=new Date(d); if(isNaN(dt)) return ''; return String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0')+'.'+dt.getFullYear(); }
+// DD/MM/YYYY (slash-separated) — used for Virtual Office agreement start/end dates.
+function fmtDateDDMMYYYYSlash(d){ if(!d) return '—'; const dt=new Date(d); if(isNaN(dt)) return '—'; return String(dt.getDate()).padStart(2,'0')+'/'+String(dt.getMonth()+1).padStart(2,'0')+'/'+dt.getFullYear(); }
 function fyLabel(dateStr){
   const d = new Date(dateStr||today());
   const y = d.getFullYear();
@@ -1671,10 +1877,35 @@ No.9 & 10, Chakrapani Street, Guindy, Chennai – 600032`;
   });
 }
 
-function markPaymentPaid(id){
-  const p = payments.find(p=>p.id===id);
-  if(p){ p.paidDate = today(); savePayments(); refreshAll(); }
+function openRecordPaymentModal(id){
+  const p = payments.find(x=>x.id===id); if(!p) return;
+  const o = occupants.find(x=>x.id===p.occupantId);
+  document.getElementById('rp-id').value = id;
+  document.getElementById('rp-context').innerHTML = `<strong>${esc(o?o.name:'Unknown')}</strong><div class="section-note">${esc(o?.comp||'')} · ${esc(formatMonthLabel(p.month))} · Amount Due: ${fmtINR(p.amountDue||0)}</div>`;
+  document.getElementById('rp-amount').value = p.paidAmount!=null ? p.paidAmount : (p.amountDue||0);
+  document.getElementById('rp-date').value = p.paidDate || today();
+  document.getElementById('rp-tds').checked = !!p.tdsDeducted;
+  document.getElementById('rp-tds-amount').value = p.tdsAmount || 0;
+  document.getElementById('rp-tds-amount-group').style.display = p.tdsDeducted ? 'block' : 'none';
+  document.getElementById('recordPaymentModal').classList.add('open');
 }
+function closeRecordPaymentModal(){ document.getElementById('recordPaymentModal').classList.remove('open'); }
+function saveRecordPayment(){
+  const id = document.getElementById('rp-id').value, p = payments.find(x=>x.id===id); if(!p) return;
+  const amount = parseFloat(document.getElementById('rp-amount').value);
+  if(isNaN(amount) || amount<0){ alert('Enter a valid amount paid.'); return; }
+  const date = document.getElementById('rp-date').value;
+  if(!date){ alert('Enter the date the payment was received.'); return; }
+  const tdsDeducted = document.getElementById('rp-tds').checked;
+  const tdsAmount = tdsDeducted ? (parseFloat(document.getElementById('rp-tds-amount').value)||0) : 0;
+  p.paidAmount = amount;
+  p.paidDate = date;
+  p.tdsDeducted = tdsDeducted;
+  p.tdsAmount = tdsAmount;
+  savePayments(); closeRecordPaymentModal(); refreshAll();
+}
+// Kept for backward compatibility with any external callers; routes to the proper Record Payment modal.
+function markPaymentPaid(id){ openRecordPaymentModal(id); }
 function getPaymentLink(){ return appSettings.paymentLink || ''; }
 function setPaymentLink(v){ appSettings.paymentLink = v||''; saveSettings(); }
 function getUpiId(){ return appSettings.upiId || ''; }
@@ -2292,12 +2523,14 @@ function renderDocuments(){
     empty.style.display='none';
     grid.innerHTML = list.map(d=>{
       const occ = occupants.find(o=>o.id===d.linkedOccupantId);
+      const vo = virtualOffice.find(v=>v.id===d.linkedVirtualOfficeId);
       return `<div class="doc-card">
         <div class="doc-icon">${iconFor(d.mime,d.name)}</div>
         <div class="doc-name">${esc(d.name)}</div>
         <span class="doc-badge ${esc(d.category.replace(/\s+/g,''))}">${esc(d.category)}</span>
         <div class="doc-meta">${fmtBytes(d.size)} · uploaded ${fmtDate(d.uploaded)}</div>
         ${occ?`<div class="doc-meta">Linked: ${esc(occ.name)}</div>`:''}
+        ${vo?`<div class="doc-meta">Linked: ${esc(vo.name)} (Virtual Office)</div>`:''}
         ${d.notes?`<div class="doc-meta" style="font-style:italic;">${esc(d.notes)}</div>`:''}
         <div class="doc-actions">
           <a class="btn btn-sm" href="${d.dataUrl}" download="${esc(d.name)}">⬇ Download</a>
@@ -2454,10 +2687,13 @@ function showPage(id, el){
     alert('This section is restricted to Admin accounts.');
     return showPage('dashboard');
   }
+  // Invoices section is disabled per request (nav entry point removed) — bounce back to the
+  // dashboard if anything still tries to navigate here directly. Page markup/logic below is
+  // left intact, just unreachable, in case Invoices needs to be turned back on later.
+  if(id==='invoices'){ return showPage('dashboard'); }
   if(id==='floors') renderFloorPage();
   if(id==='occupants') renderOccupantsTable();
   if(id==='payments') renderPaymentsPage();
-  if(id==='invoices') renderInvoicesPage();
   if(id==='revenue') renderRevenuePage();
   if(id==='alerts') renderAlerts(alertTabCurrent);
   if(id==='documents') renderDocuments();
