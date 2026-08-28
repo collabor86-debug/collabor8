@@ -255,7 +255,7 @@
   .occ-table td{padding:12px 11px}
   .occ-table tr{transition:background .15s,transform .15s}
   .occ-table tr:hover td{background:var(--tint-2)}
-  .occ-seats-pill{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:20px;background:var(--teal-dim);color:var(--teal);font-weight:600;font-size:11px}
+  .occ-seats-pill{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-width:38px;padding:4px 9px;border-radius:20px;background:var(--teal-dim);color:var(--teal);font-weight:600;font-size:11px;font-variant-numeric:tabular-nums;text-align:center}
   .occ-rent{font-weight:600;color:var(--gold)}
   .virtual-badge{display:inline-flex;padding:3px 8px;border-radius:20px;background:var(--violet-dim);color:var(--violet);font-size:10px;font-weight:600}
   .seat-allocation-list{display:grid;gap:8px;margin-top:8px}
@@ -296,6 +296,13 @@
 
   /* Occupant KYC document cards (inside Edit Occupant modal) */
   .occ-doc-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:6px 0 4px; }
+  .amenity-table{background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius-sm);overflow:hidden;}
+  .amenity-table-head{display:grid;grid-template-columns:1fr 120px 32px;gap:8px;padding:8px 10px;font-size:11px;font-weight:600;color:var(--text3);letter-spacing:0.5px;text-transform:uppercase;border-bottom:1px solid var(--border2);}
+  .amenity-row{display:grid;grid-template-columns:1fr 120px 32px;gap:8px;padding:7px 10px;align-items:center;border-bottom:1px solid var(--border);}
+  .amenity-row:last-child{border-bottom:none;}
+  .amenity-row input{background:var(--bg2);border:1px solid var(--border2);color:var(--text);border-radius:6px;padding:6px 8px;font-size:12.5px;font-family:inherit;width:100%;}
+  .amenity-row-remove{background:none;border:none;color:var(--coral);cursor:pointer;font-size:15px;line-height:1;padding:4px;}
+  .amenity-row-empty{padding:14px 10px;font-size:12px;color:var(--text3);text-align:center;}
   .occ-doc-card { background:var(--bg3); border:1px solid var(--border2); border-radius:var(--radius-sm); padding:12px; display:flex; flex-direction:column; gap:6px; }
   .occ-doc-card.empty { border-style:dashed; align-items:flex-start; }
   .occ-doc-type { font-size:11.5px; font-weight:600; color:var(--text); }
